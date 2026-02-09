@@ -1,2 +1,2 @@
-# api-dev-tools
-API testing and development tools
+# api-dev-tool
+API testing and development tool
