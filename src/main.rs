@@ -3,7 +3,7 @@ use iced::{
     Element, Length, Task,
     widget::{button, column, container, scrollable, text},
 };
-use tokio::runtime::Runtime;
+use tokio::runtime::{Handle, Runtime};
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -14,12 +14,14 @@ enum Message {
 struct State {
     response: String,
     loading: bool,
+    rt_handle: Handle,
 }
 
-fn new_state_from_response(response: String) -> State {
+fn new_state_from_response(response: String, rt_handle: Handle) -> State {
     State {
         response,
         loading: false,
+        rt_handle,
     }
 }
 
@@ -29,24 +31,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             // mark loading and spawn an async task that performs the HTTP request
             state.loading = true;
             let url = "https://jsonplaceholder.typicode.com/posts/1".to_string();
+            let handle = state.rt_handle.clone();
 
             Task::perform(
                 async move {
-                    // Create a new Tokio runtime for performing the HTTP request because the
-                    // iced executor does not provide a Tokio reactor. We block on the request
-                    // inside this dedicated runtime so reqwest/tokio can run.
-                    match Runtime::new() {
-                        Ok(rt) => rt.block_on(async move {
-                            match HttpClient::default_config() {
-                                Ok(client) => match client.get(&url).await {
-                                    Ok(body) => Ok(body),
-                                    Err(e) => Err(format!("{}", e)),
-                                },
+                    // Use the shared Tokio runtime handle to run the async reqwest call.
+                    handle.block_on(async move {
+                        match HttpClient::default_config() {
+                            Ok(client) => match client.get(&url).await {
+                                Ok(body) => Ok(body),
                                 Err(e) => Err(format!("{}", e)),
-                            }
-                        }),
-                        Err(e) => Err(format!("Tokio runtime init error: {}", e)),
-                    }
+                            },
+                            Err(e) => Err(format!("{}", e)),
+                        }
+                    })
                 },
                 Message::Fetched,
             )
@@ -97,9 +95,16 @@ async fn main() -> iced::Result {
     // Start with default prompt; the user can press the Fetch button to load data.
     let response = String::from("Press Fetch to load data.");
 
+    // Create a single Tokio runtime and keep it alive for the app lifetime.
+    let rt = Runtime::new().expect("Failed to create Tokio runtime");
+    // Keep the runtime alive in this scope for the program lifetime by binding it to `_rt`.
+    // We don't move `_rt` into the closure; we only clone and pass its `Handle`.
+    let _rt = rt;
+    let handle = _rt.handle().clone();
+
     // Provide the `new`, `update`, and `view` functions to the iced application.
     iced::application(
-        move || new_state_from_response(response.clone()),
+        move || new_state_from_response(response.clone(), handle.clone()),
         update,
         view,
     )
