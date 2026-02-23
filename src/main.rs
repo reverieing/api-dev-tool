@@ -4,6 +4,7 @@ use iced::{
     widget::{button, column, container, scrollable, text},
 };
 use tokio::runtime::{Handle, Runtime};
+use tokio::sync::oneshot;
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -35,16 +36,28 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 
             Task::perform(
                 async move {
-                    // Use the shared Tokio runtime handle to run the async reqwest call.
-                    handle.block_on(async move {
-                        match HttpClient::default_config() {
+                    // Spawn the async request on the shared runtime and return the result via a oneshot channel.
+                    // This avoids blocking the current task's thread.
+                    let (tx, rx) = oneshot::channel::<Result<String, String>>();
+                    // Build the async client task that performs the request and sends the result.
+                    let client_task = async move {
+                        let res = match HttpClient::default_config() {
                             Ok(client) => match client.get(&url).await {
                                 Ok(body) => Ok(body),
                                 Err(e) => Err(format!("{}", e)),
                             },
                             Err(e) => Err(format!("{}", e)),
-                        }
-                    })
+                        };
+                        // Ignore send errors (receiver may have been dropped).
+                        let _ = tx.send(res);
+                    };
+                    // Spawn the client task on the shared runtime handle.
+                    handle.spawn(client_task);
+                    // Await the oneshot receiver to get the request result.
+                    match rx.await {
+                        Ok(res) => res,
+                        Err(e) => Err(format!("oneshot recv error: {}", e)),
+                    }
                 },
                 Message::Fetched,
             )
@@ -90,15 +103,14 @@ fn view(state: &State) -> Element<'_, Message> {
         .into()
 }
 
-#[tokio::main]
-async fn main() -> iced::Result {
+fn main() -> iced::Result {
     // Start with default prompt; the user can press the Fetch button to load data.
     let response = String::from("Press Fetch to load data.");
 
     // Create a single Tokio runtime and keep it alive for the app lifetime.
-    let rt = Runtime::new().expect("Failed to create Tokio runtime");
     // Keep the runtime alive in this scope for the program lifetime by binding it to `_rt`.
-    // We don't move `_rt` into the closure; we only clone and pass its `Handle`.
+    // Because `main` is synchronous the runtime will only be dropped after `run()` returns.
+    let rt = Runtime::new().expect("Failed to create Tokio runtime");
     let _rt = rt;
     let handle = _rt.handle().clone();
 
